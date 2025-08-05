@@ -4,7 +4,7 @@
 #include <condition_variable>
 #include <mutex>
 
-class Player : public std::enable_shared_from_this<Player> {
+class Player {
 	private:
 		winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager m_smtcManager{ nullptr };
 
@@ -23,7 +23,6 @@ class Player : public std::enable_shared_from_this<Player> {
 		std::condition_variable m_cv;
 		bool m_sessionAttached = false;
 
-		static Player* s_instance;
 	public:
 		Player() = default;
 		~Player();

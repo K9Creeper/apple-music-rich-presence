@@ -24,8 +24,6 @@ static std::string WideToUTF8(const std::wstring& wide) {
     return utf8;
 }
 
-Player* Player::s_instance = nullptr;
-
 void Player::SCMTC_ProcessSession(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession session)
 {
     if (!session) {
@@ -55,6 +53,7 @@ void Player::SCMTC_ProcessSession(winrt::Windows::Media::Control::GlobalSystemMe
 
         {
             std::lock_guard<std::mutex> lock(m_cvMutex);
+            m_sessionAttached = true;
             m_cv.notify_one();
         }
 
@@ -101,7 +100,6 @@ void Player::Initialize() {
 
         m_cv.notify_one();
 
-        OutputDebugStringA("Rescheduling Init\n");
         std::thread([this]() {
             std::this_thread::sleep_for(std::chrono::seconds(2)); // delay before retry
             this->Initialize(); // safe only if Player is still alive
@@ -117,38 +115,13 @@ void Player::Initialize() {
             session.PlaybackInfoChanged({ this, &Player::OnPlaybackInfoChanged });
             session.MediaPropertiesChanged({ this, &Player::OnMediaPropertiesChanged });
 
-            auto mediaProps = session.TryGetMediaPropertiesAsync().get();
-            auto playbackInfo = session.GetPlaybackInfo();
-            auto timelineProps = session.GetTimelineProperties();
+            SCMTC_ProcessSession(session);
 
-            auto position = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.Position());
-            auto duration = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.EndTime() - timelineProps.StartTime());
-
-            {
-                std::lock_guard<std::mutex> lock(m_trackMutex);
-                if (!m_currentTrack) {
-                    m_currentTrack = std::make_shared<PlayerInfo>(mediaProps, playbackInfo, position, duration);
-                }
-                else {
-                    *m_currentTrack = PlayerInfo(mediaProps, playbackInfo, position, duration);
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> cvLock(m_cvMutex);
-                m_sessionAttached = true;
-                m_cv.notify_one();
-            }
-
-            if (m_playerHandler) {
-                m_playerHandler(*m_currentTrack);
-            }
-
+            OutputDebugStringA("Found a session\n");
             return;
         }
     }
 
-    OutputDebugStringA("Rescheduling Init\n");
     std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::seconds(2)); // delay before retry
         this->Initialize(); // safe only if Player is still alive
@@ -169,11 +142,11 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
     if (!session) return;
 
     std::optional<winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties> mediaPropsOpt;
-    winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties mediaProps{nullptr};
+    winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties mediaProps{ nullptr };
 
     if (Any(flags, PlayerForceUpdateFlags::Title | PlayerForceUpdateFlags::Artist | PlayerForceUpdateFlags::Album | PlayerForceUpdateFlags::Thumbnail)) {
         try {
-            mediaProps = session.TryGetMediaPropertiesAsync().get(); 
+            mediaProps = session.TryGetMediaPropertiesAsync().get();
             mediaPropsOpt = mediaProps;
         }
         catch (const winrt::hresult_error& e) {
@@ -181,11 +154,11 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
         }
     }
 
-    auto timelineProps = session.GetTimelineProperties();  
+    auto timelineProps = session.GetTimelineProperties();
 
     {
         std::lock_guard<std::mutex> lock(m_trackMutex);
-        if (!m_currentTrack) return; 
+        if (!m_currentTrack) return;
 
         if (mediaPropsOpt.has_value()) {
             if (Any(flags, PlayerForceUpdateFlags::Title))
@@ -196,6 +169,8 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
 
             if (Any(flags, PlayerForceUpdateFlags::Album))
                 m_currentTrack->albumTitle = mediaProps.AlbumTitle();
+
+            m_currentTrack->CorrectDetails();
 
             if (Any(flags, PlayerForceUpdateFlags::Thumbnail)) {
                 OutputDebugStringA("Fetching URLS\n");
@@ -216,9 +191,7 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
 }
 
 Player::~Player() {
-    if (s_instance == this) {
-        s_instance = nullptr;
-    }
+    
 }
 
 std::string HttpGet(const std::wstring& url) {

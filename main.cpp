@@ -31,6 +31,7 @@ static  bool ipcTryConnect = false;
 
 
 auto player = std::make_shared<Player>();
+std::shared_ptr<DiscordIPC> discordIpc{ nullptr };
 
 // Utility function
 static std::string WideToUTF8(const std::wstring& wide) {
@@ -48,9 +49,6 @@ static std::string WideToUTF8(const std::wstring& wide) {
 // Forward declarations
 DWORD WINAPI Init(LPVOID);
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-
-// Global IPC client pointer
-std::unique_ptr<DiscordIPC> discordIpc;
 
 // Main entry point
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
@@ -114,46 +112,43 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
 json BuildActivityPayload(const PlayerInfo& info)
 {
-    OutputDebugStringA("Welp, I am sending a payload\n");
     auto now = std::chrono::system_clock::now();
-    auto startTime = std::chrono::system_clock::to_time_t(now) - info.position.count();
-    auto endTime = std::chrono::system_clock::to_time_t(now) + (info.duration - info.position).count();
+    auto nowSeconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+
+    int64_t posSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.position).count();
+    int64_t durSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.duration).count();
 
     json activity = {
-        {"type", 2},
+        {"type", 2}, // Listening
         {"details", WideToUTF8(info.title)},
         {"state", WideToUTF8(info.artist)},
         {"assets", json::object()},
-        // Not sure abt buttons
         {"buttons", json::array({
-        {
-                {"label", "Listen to Album"},
-                {"url", ((info.albumUrl.has_value() && !info.albumUrl->empty()) ? info.albumUrl.value() : "https://music.apple.com/")}
-        }})
-        },
+            {
+                {"label", "Play on Music"},
+                {"url", info.albumUrl.has_value() && !info.albumUrl->empty()
+                    ? info.albumUrl.value()
+                    : "https://music.apple.com/"}
+            }
+        })}
     };
 
-    if (info.playbackStatus == winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused) {
-        activity["state"] = "Paused | " + WideToUTF8(info.artist);
-    }
-
+    // Set album text if available
     if (!info.albumTitle.empty()) {
         activity["assets"]["large_text"] = WideToUTF8(info.albumTitle);
     }
 
-    if (info.thumbnailUrl.has_value() && !info.thumbnailUrl->empty()) {
-        activity["assets"]["large_image"] = info.thumbnailUrl.value();
-    } else {
-        activity["assets"]["large_image"] = "apple_music_logo";
+    // Set album cover or fallback image
+    activity["assets"]["large_image"] = (info.thumbnailUrl.has_value() && !info.thumbnailUrl->empty())
+        ? info.thumbnailUrl.value()
+        : "apple_music_logo";
+
+    // Handle playback state
+    if (info.playbackStatus == winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused) {
+        activity["state"] = "Paused | " + WideToUTF8(info.artist);
+        activity.erase("timestamps");
     }
-
-    if (info.playbackStatus == winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-        auto now = std::chrono::system_clock::now();
-        auto nowSeconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-
-        auto posSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.position).count();
-        auto durSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.duration).count();
-
+    else if (info.playbackStatus == winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
         int64_t startTime = nowSeconds - posSeconds;
         int64_t endTime = startTime + durSeconds;
 
@@ -162,6 +157,9 @@ json BuildActivityPayload(const PlayerInfo& info)
             {"end", endTime}
         };
     }
+    else {
+        activity.erase("timestamps");
+    }
 
     return activity;
 }
@@ -169,28 +167,20 @@ json BuildActivityPayload(const PlayerInfo& info)
 static void IPCNotifyRetry();
 static bool IsDiscordRunning();
 
-// Background thread
-DWORD WINAPI Init(LPVOID) {    
+void ConnectToDiscord() {
     const uint64_t clientId = 1402044057647186053;
-    isRunning.store(true);
-
-    std::thread discordWaiter([] {
-        while (isRunning.load()) {
-            if (IsDiscordRunning()) {
-                IPCNotifyRetry();
-            }
-            std::this_thread::sleep_for(std::chrono::seconds(10));
-        }
-        });
 
     while (isRunning.load()) {
+        if (discordIpc && discordIpc->IsConnected())
+            break;
+
         std::unique_lock<std::mutex> lock(ipcMtx);
         ipcCv.wait(lock, [&] { return ipcTryConnect || !isRunning.load(); });
 
         if (!isRunning.load()) break;
         ipcTryConnect = false;
 
-        discordIpc = std::make_unique<DiscordIPC>(std::to_string(clientId));
+        discordIpc = std::make_shared<DiscordIPC>(std::to_string(clientId));
         if (discordIpc->Connect()) {
             OutputDebugStringA("Discord IPC connected.\n");
             break;
@@ -198,9 +188,23 @@ DWORD WINAPI Init(LPVOID) {
         OutputDebugStringA("Discord IPC not available. Retrying...\n");
         discordIpc.reset();
     }
+}
+
+// Background thread
+DWORD WINAPI Init(LPVOID) {    
+    isRunning.store(true);
+    std::thread discordWaiter([] {
+        while (isRunning.load()) {
+            if (IsDiscordRunning()) {
+                IPCNotifyRetry();
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
+        });
 
     player->SetPlayerInfoHandler([&](const PlayerInfo& info) {
         if (!info.isValid()) return;
+
         if (!discordIpc || !discordIpc->IsConnected()) return;
 
         if (!info.thumbnailUrl.has_value())
@@ -217,37 +221,31 @@ DWORD WINAPI Init(LPVOID) {
     player->Initialize();
 
     while (isRunning.load()) {
-        while (isRunning.load()) {
-            std::unique_lock<std::mutex> lock(ipcMtx);
-            ipcCv.wait(lock, [&] { return ipcTryConnect || !isRunning.load(); });
-
-            if (!isRunning.load()) break;
-            ipcTryConnect = false;
-
-            discordIpc = std::make_unique<DiscordIPC>(std::to_string(clientId));
-            if (discordIpc->Connect()) {
-                OutputDebugStringA("Discord IPC connected.\n");
-                break;
-            }
-            OutputDebugStringA("Discord IPC not available. Retrying...\n");
-            discordIpc.reset();
-        }
 
         if (!isRunning.load()) break;
 
+
+
         while (isRunning.load()) {
+            {
+                std::unique_lock<std::mutex> lock(player->m_cvMutex);
+                player->m_cv.wait(lock, [&] {
+                    if (!player->m_sessionAttached && discordIpc && discordIpc->IsConnected()) {
+                        OutputDebugStringA("Player not available. Disconnecting from Discord...\n");
+                        discordIpc.reset();
+                    }
+                    else {
+                        ConnectToDiscord();
+                    }
+
+                    return !isRunning.load() || player->m_sessionAttached;
+                    });
+            }
 
             if (!discordIpc || !discordIpc->IsConnected()) {
                 OutputDebugStringA("Discord IPC lost connection.\n");
                 IPCNotifyRetry();
                 break;
-            }
-
-            {
-                std::unique_lock<std::mutex> lock(player->m_cvMutex);
-                player->m_cv.wait(lock, [] {
-                    return !isRunning.load() || player->m_sessionAttached;
-                    });
             }
 
             if (!isRunning.load()) break;

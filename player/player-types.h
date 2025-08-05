@@ -71,6 +71,14 @@ struct PlayerInfo
         position(pos),
         playbackStatus(playbackInfo.PlaybackStatus())
     {
+        
+    }
+
+    bool isValid() const {
+        return !(duration.count() == 0 || title.empty() || artist.empty());
+    }
+
+    void CorrectDetails() {
         if (albumTitle.empty()) {
             size_t sepPos = artist.find(L" — ");
             if (sepPos != std::wstring::npos) {
@@ -81,11 +89,7 @@ struct PlayerInfo
                 albumTitle = newAlbum;
             }
         }
-    }
-
-    bool isValid() const {
-        return !(duration.count() == 0 || title.empty() || artist.empty());
-    }
+	}
 
     void UpdateUrls();
 };

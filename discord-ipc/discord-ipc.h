@@ -2,6 +2,8 @@
 
 #include <windows.h>
 #include <string>
+#include <mutex>
+
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
@@ -17,8 +19,11 @@ public:
 	bool IsConnected() const;
 
 private:
+    std::atomic<bool> listening{ false };
+
     HANDLE pipe_;
     std::string clientId_;
+    std::mutex pipeMutex_;
 
     bool SendHandshake();
     bool SendFrame(int opcode, const json& payload);
