@@ -58,7 +58,7 @@ void Player::SCMTC_ProcessSession(winrt::Windows::Media::Control::GlobalSystemMe
             m_cv.notify_one();
         }
 
-        ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
+        //ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
     }
     catch (const winrt::hresult_error& e) {
         OutputDebugStringA(("SCMTC_ProcessSession failed: " + std::string(winrt::to_string(e.message())) + "\n").c_str());
@@ -197,8 +197,8 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
             if (Any(flags, PlayerForceUpdateFlags::Album))
                 m_currentTrack->albumTitle = mediaProps.AlbumTitle();
 
-            if (Any(flags, PlayerForceUpdateFlags::Thumbnail) && mediaProps.Thumbnail()) {
-                OutputDebugStringA("Done it\n");
+            if (Any(flags, PlayerForceUpdateFlags::Thumbnail)) {
+                OutputDebugStringA("Fetching URLS\n");
                 m_currentTrack->UpdateUrls();
             }
         }

@@ -2,6 +2,10 @@
 #include <sstream>
 #include <iostream>
 
+// OP CODES
+#define HANDSHAKE 0
+#define FRAME 1
+
 using json = nlohmann::json;
 
 DiscordIPC::DiscordIPC(const std::string& clientId)
@@ -37,7 +41,7 @@ bool DiscordIPC::SendHandshake() {
         {"v", 1},
         {"client_id", clientId_}
     };
-    return SendFrame(0, payload); // Opcode 0 = HANDSHAKE
+    return SendFrame(HANDSHAKE, payload);
 }
 
 bool DiscordIPC::SendActivity(const json& activity) {
@@ -49,17 +53,51 @@ bool DiscordIPC::SendActivity(const json& activity) {
         }},
         {"nonce", std::to_string(GetTickCount64())}
     };
-    return SendFrame(1, payload); // Opcode 1 = FRAME
+    return SendFrame(FRAME, payload);
+}
+
+bool DiscordIPC::IsConnected() const {
+    if (pipe_ == INVALID_HANDLE_VALUE) return false;
+    DWORD bytesAvailable = 0;
+    BOOL peekResult = PeekNamedPipe(pipe_, nullptr, 0, nullptr, &bytesAvailable, nullptr);
+    return peekResult;
 }
 
 bool DiscordIPC::SendFrame(int opcode, const json& payload) {
     std::string data = payload.dump();
     int32_t length = static_cast<int32_t>(data.size());
 
+    auto isDisconnectError = [](DWORD err) {
+        return err == ERROR_BROKEN_PIPE ||
+            err == ERROR_PIPE_NOT_CONNECTED ||
+            err == ERROR_NO_DATA;
+        };
+
     DWORD written;
-    if (!WriteFile(pipe_, &opcode, 4, &written, nullptr)) return false;
-    if (!WriteFile(pipe_, &length, 4, &written, nullptr)) return false;
-    if (!WriteFile(pipe_, data.data(), data.size(), &written, nullptr)) return false;
+
+    if (!WriteFile(pipe_, &opcode, sizeof(opcode), &written, nullptr) || written != sizeof(opcode)) {
+        DWORD err = GetLastError();
+        if (isDisconnectError(err)) {
+            Close();
+        }
+        return false;
+    }
+
+    if (!WriteFile(pipe_, &length, sizeof(length), &written, nullptr) || written != sizeof(length)) {
+        DWORD err = GetLastError();
+        if (isDisconnectError(err)){
+            Close();
+        }
+        return false;
+    }
+
+    if (!WriteFile(pipe_, data.data(), data.size(), &written, nullptr) || written != data.size()) {
+        DWORD err = GetLastError();
+        if (isDisconnectError(err)) {
+            Close();
+        }
+        return false;
+    }
 
     return true;
 }

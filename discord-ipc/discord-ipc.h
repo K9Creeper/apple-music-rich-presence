@@ -14,6 +14,8 @@ public:
     void Close();
     bool SendActivity(const json& activity);
 
+	bool IsConnected() const;
+
 private:
     HANDLE pipe_;
     std::string clientId_;
