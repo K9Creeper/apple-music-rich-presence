@@ -103,8 +103,6 @@ void Player::HandleSessionsChanged() {
             std::lock_guard<std::mutex> lock(m_cvMutex);
             m_cv.notify_one();
         }
-
-        OutputDebugStringA("Stopping..\n");
     }
 }
 
