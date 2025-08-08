@@ -82,15 +82,13 @@ bool Player::CheckForAppleMusicSession() {
             session.PlaybackInfoChanged({ this, &Player::OnPlaybackInfoChanged });
             session.MediaPropertiesChanged({ this, &Player::OnMediaPropertiesChanged });
             SCMTC_ProcessSession(session);
-            OutputDebugStringA("Found a session\n");
             return true;
         }
     }
-    OutputDebugStringA("Didn't find a session\n");
     return false;
 }
 
-void Player::HandleSessionsChanged() {
+bool Player::HandleSessionsChanged() {
     if (!CheckForAppleMusicSession()) {
         {
             std::lock_guard<std::mutex> lock(m_trackMutex);
@@ -103,7 +101,10 @@ void Player::HandleSessionsChanged() {
             std::lock_guard<std::mutex> lock(m_cvMutex);
             m_cv.notify_one();
         }
+        return false;
     }
+
+    return true;
 }
 
 void Player::Initialize() {

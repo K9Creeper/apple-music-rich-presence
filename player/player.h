@@ -19,7 +19,7 @@ class Player {
 		void OnMediaPropertiesChanged(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession sender, winrt::Windows::Foundation::IInspectable const&);
 
 		bool CheckForAppleMusicSession();
-		void HandleSessionsChanged();
+		bool HandleSessionsChanged();
 
 	public:
 		std::mutex m_cvMutex;

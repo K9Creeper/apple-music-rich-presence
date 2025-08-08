@@ -112,6 +112,10 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
 json BuildActivityPayload(const PlayerInfo& info)
 {
+	static PlayerInfo lastInfo;
+    
+	const int& type = 2; // Default to Listening
+
     auto now = std::chrono::system_clock::now();
     auto nowSeconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
 
@@ -119,7 +123,7 @@ json BuildActivityPayload(const PlayerInfo& info)
     int64_t durSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.duration).count();
 
     json activity = {
-        {"type", 2}, // Listening
+        {"type", type}, // Listening
         {"details", WideToUTF8(info.title)},
         {"state", WideToUTF8(info.artist)},
         {"assets", json::object()},
@@ -161,35 +165,15 @@ json BuildActivityPayload(const PlayerInfo& info)
         activity.erase("timestamps");
     }
 
+    lastInfo = info;
+
     return activity;
 }
 
 static void IPCNotifyRetry();
 static bool IsDiscordRunning();
 static bool IsAppleMusicRunning();
-
-void ConnectToDiscord() {
-    const uint64_t clientId = 1402044057647186053;
-
-    while (isRunning.load()) {
-        if (discordIpc && discordIpc->IsConnected())
-            break;
-
-        std::unique_lock<std::mutex> lock(ipcMtx);
-        ipcCv.wait(lock, [&] { return ipcTryConnect || !isRunning.load(); });
-
-        if (!isRunning.load()) break;
-        ipcTryConnect = false;
-
-        discordIpc = std::make_shared<DiscordIPC>(std::to_string(clientId));
-        if (discordIpc->Connect()) {
-            OutputDebugStringA("Discord IPC connected.\n");
-            break;
-        }
-        OutputDebugStringA("Discord IPC not available. Retrying...\n");
-        discordIpc.reset();
-    }
-}
+static void ConnectToDiscord();
 
 // Background thread
 DWORD WINAPI Init(LPVOID) {
@@ -220,6 +204,7 @@ DWORD WINAPI Init(LPVOID) {
         });
 
         player->Initialize();
+        ConnectToDiscord();
 
         while (isRunning.load(std::memory_order_acquire)) {
             std::unique_lock<std::mutex> lock(player->m_cvMutex);
@@ -230,6 +215,23 @@ DWORD WINAPI Init(LPVOID) {
             if (!isRunning.load(std::memory_order_acquire)) {
                 break;
             }
+
+            while (!player->GetCurrentTrack() || !player->GetCurrentTrack()->isValid() || (!discordIpc || !discordIpc->IsConnected())) {
+                {
+                    if (!discordIpc || !discordIpc->IsConnected()) ConnectToDiscord();
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+
+            // Make sure it forces on load
+            player->ForceUpdate(
+                PlayerForceUpdateFlags::Title |
+                PlayerForceUpdateFlags::Artist |
+                PlayerForceUpdateFlags::Album |
+                PlayerForceUpdateFlags::Duration |
+                PlayerForceUpdateFlags::Position |
+                PlayerForceUpdateFlags::Status
+            );
 
             while (true) {
                 if (!isRunning.load(std::memory_order_acquire) || !player->m_sessionAttached.load(std::memory_order_acquire) || !IsAppleMusicRunning()) {
@@ -245,6 +247,7 @@ DWORD WINAPI Init(LPVOID) {
 
                 ConnectToDiscord();
 
+                /*
                 player->ForceUpdate(
                     PlayerForceUpdateFlags::Title |
                     PlayerForceUpdateFlags::Artist |
@@ -253,8 +256,9 @@ DWORD WINAPI Init(LPVOID) {
                     PlayerForceUpdateFlags::Position |
                     PlayerForceUpdateFlags::Status
                 );
+                */
 
-                std::this_thread::sleep_for(std::chrono::seconds(10));
+                std::this_thread::sleep_for(std::chrono::seconds(1));
 
                 lock.lock();
             }
@@ -311,6 +315,29 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
 
     return 0;
+}
+
+static void ConnectToDiscord() {
+    const uint64_t clientId = 1402044057647186053;
+
+    while (isRunning.load()) {
+        if (discordIpc && discordIpc->IsConnected())
+            break;
+
+        std::unique_lock<std::mutex> lock(ipcMtx);
+        ipcCv.wait(lock, [&] { return ipcTryConnect || !isRunning.load(); });
+
+        if (!isRunning.load()) break;
+        ipcTryConnect = false;
+
+        discordIpc = std::make_shared<DiscordIPC>(std::to_string(clientId));
+        if (discordIpc->Connect()) {
+            OutputDebugStringA("Discord IPC connected.\n");
+            break;
+        }
+        OutputDebugStringA("Discord IPC not available. Retrying...\n");
+        discordIpc.reset();
+    }
 }
 
 static void IPCNotifyRetry() {
