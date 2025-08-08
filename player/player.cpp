@@ -49,7 +49,10 @@ void Player::SCMTC_ProcessSession(winrt::Windows::Media::Control::GlobalSystemMe
             else {
                 *m_currentTrack = PlayerInfo(mediaProps, playbackInfo, position, duration);
             }
+
         }
+
+        ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
 
         m_sessionAttached.store(true, std::memory_order_release);
         {
