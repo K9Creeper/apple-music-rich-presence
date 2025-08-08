@@ -41,22 +41,24 @@ void Player::SCMTC_ProcessSession(winrt::Windows::Media::Control::GlobalSystemMe
             auto position = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.Position());
             auto duration = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.EndTime() - timelineProps.StartTime());
 
-            std::lock_guard<std::mutex> lock(m_trackMutex);
+            PlayerInfo trackInfo(mediaProps, playbackInfo, position, duration);
 
-            if (!m_currentTrack) {
-                m_currentTrack = std::make_shared<PlayerInfo>(mediaProps, playbackInfo, position, duration);
+            {
+                std::lock_guard<std::mutex> lock(m_trackMutex);
+                if (!m_currentTrack) {
+                    m_currentTrack = std::make_shared<PlayerInfo>(trackInfo);
+                }
+                else {
+                    *m_currentTrack = trackInfo;
+                }
             }
-            else {
-                *m_currentTrack = PlayerInfo(mediaProps, playbackInfo, position, duration);
-            }
-
         }
 
         ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
 
-        m_sessionAttached.store(true, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(m_cvMutex);
+            m_sessionAttached.store(true, std::memory_order_release);
             m_cv.notify_one();
         }
     }
@@ -95,10 +97,9 @@ bool Player::HandleSessionsChanged() {
             m_currentTrack.reset();
         }
 
-        m_sessionAttached.store(false, std::memory_order_release);
-
         {
             std::lock_guard<std::mutex> lock(m_cvMutex);
+            m_sessionAttached.store(false, std::memory_order_release);
             m_cv.notify_one();
         }
         return false;
@@ -121,22 +122,28 @@ void Player::SetPlayerInfoHandler(PlayerInfoHandler handler) {
     m_playerHandler = std::move(handler);
 }
 
-std::shared_ptr<PlayerInfo> Player::GetCurrentTrack() { return m_currentTrack; }
+bool Player::isValidTrack() {
+    std::lock_guard<std::mutex> lock(m_trackMutex);
+    return m_currentTrack && m_currentTrack->isValid();
+}
 
-void Player::ForceUpdate(PlayerForceUpdateFlags flags)
+PlayerInfo Player::ForceUpdate(PlayerForceUpdateFlags flags, bool callHandler)
 {
-    if (!m_smtcManager) return;
+    if (!m_smtcManager) {
+        OutputDebugStringA("ForceUpdate: SMTC manager not available.\n");
+        return {};
+    }
 
     auto session = m_smtcManager.GetCurrentSession();
-    if (!session) return;
+    if (!session) {
+        OutputDebugStringA("ForceUpdate: No current session.\n");
+        return {};
+    }
 
     std::optional<winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties> mediaPropsOpt;
-    winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties mediaProps{ nullptr };
-
     if (Any(flags, PlayerForceUpdateFlags::Title | PlayerForceUpdateFlags::Artist | PlayerForceUpdateFlags::Album | PlayerForceUpdateFlags::Thumbnail)) {
         try {
-            mediaProps = session.TryGetMediaPropertiesAsync().get();
-            mediaPropsOpt = mediaProps;
+            mediaPropsOpt = session.TryGetMediaPropertiesAsync().get();
         }
         catch (const winrt::hresult_error& e) {
             OutputDebugStringA(("ForceUpdate: Failed to get media props: " + std::string(winrt::to_string(e.message())) + "\n").c_str());
@@ -148,29 +155,44 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
     PlayerInfo trackCopy;
     {
         std::lock_guard<std::mutex> lock(m_trackMutex);
-        if (!m_currentTrack) return;
-        if (mediaPropsOpt.has_value()) {
-            if (Any(flags, PlayerForceUpdateFlags::Title)) m_currentTrack->title = mediaProps.Title();
-            if (Any(flags, PlayerForceUpdateFlags::Artist)) m_currentTrack->artist = mediaProps.Artist();
-            if (Any(flags, PlayerForceUpdateFlags::Album)) m_currentTrack->albumTitle = mediaProps.AlbumTitle();
-            
+        if (!m_currentTrack) {
+            OutputDebugStringA("ForceUpdate: No current track.\n");
+            return {};
+        }
+
+        if (mediaPropsOpt) {
+            const auto& mediaProps = *mediaPropsOpt;
+            if (Any(flags, PlayerForceUpdateFlags::Title)) {
+                m_currentTrack->title = mediaProps.Title();
+            }
+            if (Any(flags, PlayerForceUpdateFlags::Artist)) {
+                m_currentTrack->artist = mediaProps.Artist();
+            }
+            if (Any(flags, PlayerForceUpdateFlags::Album)) {
+                m_currentTrack->albumTitle = mediaProps.AlbumTitle();
+            }
             m_currentTrack->CorrectDetails();
+
             if (Any(flags, PlayerForceUpdateFlags::Thumbnail)) {
                 m_currentTrack->UpdateUrls();
             }
         }
-        if (Any(flags, PlayerForceUpdateFlags::Position))
+
+        if (Any(flags, PlayerForceUpdateFlags::Position)) {
             m_currentTrack->position = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.Position());
-        if (Any(flags, PlayerForceUpdateFlags::Duration))
+        }
+        if (Any(flags, PlayerForceUpdateFlags::Duration)) {
             m_currentTrack->duration = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.EndTime() - timelineProps.StartTime());
+        }
 
         trackCopy = *m_currentTrack;
     }
 
-    if (m_playerHandler) {
+    if (m_playerHandler && callHandler && trackCopy.isValid()) {
         m_playerHandler(trackCopy);
     }
 
+    return trackCopy;
 }
 
 Player::~Player() {

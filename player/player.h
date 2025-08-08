@@ -8,8 +8,8 @@ class Player {
 	private:
 		winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager m_smtcManager{ nullptr };
 
-		std::shared_ptr<PlayerInfo> m_currentTrack;
 		std::mutex m_trackMutex;
+		std::shared_ptr<PlayerInfo> m_currentTrack;
 
 		PlayerInfoHandler m_playerHandler;
 
@@ -22,6 +22,7 @@ class Player {
 		bool HandleSessionsChanged();
 
 	public:
+
 		std::mutex m_cvMutex;
 		std::condition_variable m_cv;
 		std::atomic<bool> m_sessionAttached{ false };
@@ -33,6 +34,6 @@ class Player {
 
 		void Initialize();
 		void SetPlayerInfoHandler(PlayerInfoHandler handler);
-		std::shared_ptr<PlayerInfo> GetCurrentTrack();
-		void ForceUpdate(PlayerForceUpdateFlags flags = PlayerForceUpdateFlags::None);
+		bool isValidTrack();
+		PlayerInfo ForceUpdate(PlayerForceUpdateFlags flags = PlayerForceUpdateFlags::None, bool callHandler = true);
 };

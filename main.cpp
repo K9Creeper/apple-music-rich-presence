@@ -188,21 +188,23 @@ DWORD WINAPI Init(LPVOID) {
         }
         });
 
-    player->SetPlayerInfoHandler([](const PlayerInfo& info) {
+    player->SetPlayerInfoHandler([&](const PlayerInfo& info) {
         if (!info.isValid()) return;
 
-        if (!discordIpc || !discordIpc->IsConnected()) return;
+        {
+            std::lock_guard<std::mutex> lock(ipcMtx);
+            if (!discordIpc || !discordIpc->IsConnected()) return;
 
-        if (!info.thumbnailUrl.has_value()) {
-            player->ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
+            if (!info.thumbnailUrl.has_value()) {
+                player->ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
+            }
+
+            json activity = BuildActivityPayload(info);
+            if (!discordIpc->SendActivity(activity)) {
+                IPCNotifyRetry();
+            }
         }
-
-        json activity = BuildActivityPayload(info);
-        if (!discordIpc->SendActivity(activity)) {
-            IPCNotifyRetry();
-        }
-        });
-
+    });
         player->Initialize();
         ConnectToDiscord();
 
@@ -216,23 +218,13 @@ DWORD WINAPI Init(LPVOID) {
                 break;
             }
 
-            while (!player->GetCurrentTrack() || !player->GetCurrentTrack()->isValid() || (!discordIpc || !discordIpc->IsConnected())) {
-                {
+            while ((!discordIpc || !discordIpc->IsConnected()) && isRunning.load(std::memory_order_acquire) && player->m_sessionAttached.load(std::memory_order_acquire)) {
                     if (!discordIpc || !discordIpc->IsConnected()) ConnectToDiscord();
+
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            }
 
-            // Make sure it forces on load
-            player->ForceUpdate(
-                PlayerForceUpdateFlags::Title |
-                PlayerForceUpdateFlags::Artist |
-                PlayerForceUpdateFlags::Album |
-                PlayerForceUpdateFlags::Duration |
-                PlayerForceUpdateFlags::Position |
-                PlayerForceUpdateFlags::Status
-            );
-
+            size_t i = 0;
             while (true) {
                 if (!isRunning.load(std::memory_order_acquire) || !player->m_sessionAttached.load(std::memory_order_acquire) || !IsAppleMusicRunning()) {
                     if (discordIpc) {
@@ -247,16 +239,10 @@ DWORD WINAPI Init(LPVOID) {
 
                 ConnectToDiscord();
 
-                /*
-                player->ForceUpdate(
-                    PlayerForceUpdateFlags::Title |
-                    PlayerForceUpdateFlags::Artist |
-                    PlayerForceUpdateFlags::Album |
-                    PlayerForceUpdateFlags::Duration |
-                    PlayerForceUpdateFlags::Position |
-                    PlayerForceUpdateFlags::Status
-                );
-                */
+                // FIXME: Make this only based off if duration and position is == 0
+                if (!player->isValidTrack()) {
+                    player->ForceUpdate(PlayerForceUpdateFlags::Duration | PlayerForceUpdateFlags::Position);
+                }
 
                 std::this_thread::sleep_for(std::chrono::seconds(1));
 
@@ -321,10 +307,11 @@ static void ConnectToDiscord() {
     const uint64_t clientId = 1402044057647186053;
 
     while (isRunning.load()) {
+        std::unique_lock<std::mutex> lock(ipcMtx);
+
         if (discordIpc && discordIpc->IsConnected())
             break;
 
-        std::unique_lock<std::mutex> lock(ipcMtx);
         ipcCv.wait(lock, [&] { return ipcTryConnect || !isRunning.load(); });
 
         if (!isRunning.load()) break;

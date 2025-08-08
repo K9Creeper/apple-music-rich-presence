@@ -75,7 +75,9 @@ struct PlayerInfo
     }
 
     bool isValid() const {
-        return !(duration.count() == 0 || title.empty() || artist.empty());
+        if (duration.count() == 0 || artist.empty() || title.empty())
+            return false;
+        return true;
     }
 
     void CorrectDetails() {
