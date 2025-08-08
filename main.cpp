@@ -166,6 +166,7 @@ json BuildActivityPayload(const PlayerInfo& info)
 
 static void IPCNotifyRetry();
 static bool IsDiscordRunning();
+static bool IsAppleMusicRunning();
 
 void ConnectToDiscord() {
     const uint64_t clientId = 1402044057647186053;
@@ -191,8 +192,9 @@ void ConnectToDiscord() {
 }
 
 // Background thread
-DWORD WINAPI Init(LPVOID) {    
+DWORD WINAPI Init(LPVOID) {
     isRunning.store(true);
+
     std::thread discordWaiter([] {
         while (isRunning.load()) {
             if (IsDiscordRunning()) {
@@ -202,13 +204,12 @@ DWORD WINAPI Init(LPVOID) {
         }
         });
 
-    player->SetPlayerInfoHandler([&](const PlayerInfo& info) {
+    player->SetPlayerInfoHandler([](const PlayerInfo& info) {
         if (!info.isValid()) return;
 
         if (!discordIpc || !discordIpc->IsConnected()) return;
 
-        if (!info.thumbnailUrl.has_value())
-        {
+        if (!info.thumbnailUrl.has_value()) {
             player->ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
         }
 
@@ -216,66 +217,62 @@ DWORD WINAPI Init(LPVOID) {
         if (!discordIpc->SendActivity(activity)) {
             IPCNotifyRetry();
         }
-    });
+        });
 
-    player->Initialize();
+        player->Initialize();
 
-    while (isRunning.load()) {
+        while (isRunning.load(std::memory_order_acquire)) {
+            std::unique_lock<std::mutex> lock(player->m_cvMutex);
+            player->m_cv.wait(lock, [&] {
+                return !isRunning.load(std::memory_order_acquire) || player->m_sessionAttached.load(std::memory_order_acquire);
+                });
 
-        if (!isRunning.load()) break;
-
-
-
-        while (isRunning.load()) {
-            {
-                std::unique_lock<std::mutex> lock(player->m_cvMutex);
-                player->m_cv.wait(lock, [&] {
-                    if (!player->m_sessionAttached && discordIpc && discordIpc->IsConnected()) {
-                        OutputDebugStringA("Player not available. Disconnecting from Discord...\n");
-                        discordIpc.reset();
-                    }
-                    else {
-                        ConnectToDiscord();
-                    }
-
-                    return !isRunning.load() || player->m_sessionAttached;
-                    });
-            }
-
-            if (!discordIpc || !discordIpc->IsConnected()) {
-                OutputDebugStringA("Discord IPC lost connection.\n");
-                IPCNotifyRetry();
+            if (!isRunning.load(std::memory_order_acquire)) {
                 break;
             }
 
-            if (!isRunning.load()) break;
-
-            PlayerForceUpdateFlags updateMask =
-                PlayerForceUpdateFlags::Title |
-                PlayerForceUpdateFlags::Artist |
-                PlayerForceUpdateFlags::Album |
-                PlayerForceUpdateFlags::Duration |
-                PlayerForceUpdateFlags::Position |
-                PlayerForceUpdateFlags::Status;
-
-            {
-                std::lock_guard<std::mutex> lock(player->m_cvMutex);
-                if (player->m_sessionAttached) {
-                    player->ForceUpdate(updateMask);
+            while (true) {
+                if (!isRunning.load(std::memory_order_acquire) || !player->m_sessionAttached.load(std::memory_order_acquire) || !IsAppleMusicRunning()) {
+                    if (discordIpc) {
+                        discordIpc.reset();
+                    }
+                    player->m_sessionAttached.store(false, std::memory_order_release);
+                    player->m_cv.notify_one();
+                    break;
                 }
+
+                lock.unlock();
+
+                ConnectToDiscord();
+
+                player->ForceUpdate(
+                    PlayerForceUpdateFlags::Title |
+                    PlayerForceUpdateFlags::Artist |
+                    PlayerForceUpdateFlags::Album |
+                    PlayerForceUpdateFlags::Duration |
+                    PlayerForceUpdateFlags::Position |
+                    PlayerForceUpdateFlags::Status
+                );
+
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+
+                lock.lock();
             }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
 
-        if (discordIpc) {
-            discordIpc.reset();
-        }
+ 
+       if (player){
+        player.reset();
+       }
+
+    if (discordIpc) {
+        discordIpc.reset();
     }
 
     if (discordWaiter.joinable()) {
         discordWaiter.join();
     }
+
 
     return 0;
 }
@@ -335,6 +332,27 @@ static bool IsDiscordRunning() {
     if (Process32First(snapshot, &entry)) {
         do {
             if (_wcsicmp(entry.szExeFile, L"discord.exe") == 0) {
+                found = true;
+                break;
+            }
+        } while (Process32Next(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return found;
+}
+
+static bool IsAppleMusicRunning() {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return false;
+
+    PROCESSENTRY32 entry = {};
+    entry.dwSize = sizeof(PROCESSENTRY32);
+
+    bool found = false;
+    if (Process32First(snapshot, &entry)) {
+        do {
+            if (_wcsicmp(entry.szExeFile, L"AppleMusic.exe") == 0) {
                 found = true;
                 break;
             }

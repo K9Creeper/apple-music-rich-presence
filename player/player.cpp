@@ -51,13 +51,11 @@ void Player::SCMTC_ProcessSession(winrt::Windows::Media::Control::GlobalSystemMe
             }
         }
 
+        m_sessionAttached.store(true, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(m_cvMutex);
-            m_sessionAttached = true;
             m_cv.notify_one();
         }
-
-        //ForceUpdate(PlayerForceUpdateFlags::Thumbnail);
     }
     catch (const winrt::hresult_error& e) {
         OutputDebugStringA(("SCMTC_ProcessSession failed: " + std::string(winrt::to_string(e.message())) + "\n").c_str());
@@ -74,58 +72,47 @@ void Player::OnMediaPropertiesChanged(winrt::Windows::Media::Control::GlobalSyst
     SCMTC_ProcessSession(sender);
 }
 
-void Player::Initialize() {
-    m_smtcManager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-    m_smtcManager.SessionsChanged([this](auto&&...) {
-        for (auto const& session : m_smtcManager.GetSessions()) {
-            auto appId = session.SourceAppUserModelId();
-            if (std::wstring(appId.c_str()).find(L"AppleInc.AppleMusic") != std::wstring::npos) {
-                session.PlaybackInfoChanged({ this, &Player::OnPlaybackInfoChanged });
-                session.MediaPropertiesChanged({ this, &Player::OnMediaPropertiesChanged });
-
-                std::lock_guard<std::mutex> cvLock(m_cvMutex);
-                m_sessionAttached = true;
-                return;
-            }
+bool Player::CheckForAppleMusicSession() {
+    for (auto const& session : m_smtcManager.GetSessions()) {
+        auto appId = session.SourceAppUserModelId();
+        if (std::wstring(appId.c_str()).find(L"AppleInc.AppleMusic") != std::wstring::npos) {
+            session.PlaybackInfoChanged({ this, &Player::OnPlaybackInfoChanged });
+            session.MediaPropertiesChanged({ this, &Player::OnMediaPropertiesChanged });
+            SCMTC_ProcessSession(session);
+            OutputDebugStringA("Found a session\n");
+            return true;
         }
+    }
+    OutputDebugStringA("Didn't find a session\n");
+    return false;
+}
 
+void Player::HandleSessionsChanged() {
+    if (!CheckForAppleMusicSession()) {
         {
             std::lock_guard<std::mutex> lock(m_trackMutex);
             m_currentTrack.reset();
         }
+
+        m_sessionAttached.store(false, std::memory_order_release);
+
         {
             std::lock_guard<std::mutex> lock(m_cvMutex);
-            m_sessionAttached = false;
+            m_cv.notify_one();
         }
 
-        m_cv.notify_one();
-
-        std::thread([this]() {
-            std::this_thread::sleep_for(std::chrono::seconds(2)); // delay before retry
-            this->Initialize(); // safe only if Player is still alive
-            }).detach(); // no need to join
-        });
-
-    for (auto const& session : m_smtcManager.GetSessions())
-    {
-        auto appId = session.SourceAppUserModelId();
-
-        if (std::wstring(appId.c_str()).find(L"AppleInc.AppleMusic") != std::wstring::npos)
-        {
-            session.PlaybackInfoChanged({ this, &Player::OnPlaybackInfoChanged });
-            session.MediaPropertiesChanged({ this, &Player::OnMediaPropertiesChanged });
-
-            SCMTC_ProcessSession(session);
-
-            OutputDebugStringA("Found a session\n");
-            return;
-        }
+        OutputDebugStringA("Stopping..\n");
     }
+}
 
-    std::thread([this]() {
-        std::this_thread::sleep_for(std::chrono::seconds(2)); // delay before retry
-        this->Initialize(); // safe only if Player is still alive
-        }).detach(); // no need to join
+void Player::Initialize() {
+    m_smtcManager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+
+    m_smtcManager.SessionsChanged([this](auto&&...) {
+        HandleSessionsChanged();
+    });
+
+    HandleSessionsChanged();
 }
 
 void Player::SetPlayerInfoHandler(PlayerInfoHandler handler) {
@@ -156,38 +143,32 @@ void Player::ForceUpdate(PlayerForceUpdateFlags flags)
 
     auto timelineProps = session.GetTimelineProperties();
 
+    PlayerInfo trackCopy;
     {
         std::lock_guard<std::mutex> lock(m_trackMutex);
         if (!m_currentTrack) return;
-
         if (mediaPropsOpt.has_value()) {
-            if (Any(flags, PlayerForceUpdateFlags::Title))
-                m_currentTrack->title = mediaProps.Title();
-
-            if (Any(flags, PlayerForceUpdateFlags::Artist))
-                m_currentTrack->artist = mediaProps.Artist();
-
-            if (Any(flags, PlayerForceUpdateFlags::Album))
-                m_currentTrack->albumTitle = mediaProps.AlbumTitle();
-
+            if (Any(flags, PlayerForceUpdateFlags::Title)) m_currentTrack->title = mediaProps.Title();
+            if (Any(flags, PlayerForceUpdateFlags::Artist)) m_currentTrack->artist = mediaProps.Artist();
+            if (Any(flags, PlayerForceUpdateFlags::Album)) m_currentTrack->albumTitle = mediaProps.AlbumTitle();
+            
             m_currentTrack->CorrectDetails();
-
             if (Any(flags, PlayerForceUpdateFlags::Thumbnail)) {
-                OutputDebugStringA("Fetching URLS\n");
                 m_currentTrack->UpdateUrls();
             }
         }
-
         if (Any(flags, PlayerForceUpdateFlags::Position))
             m_currentTrack->position = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.Position());
-
         if (Any(flags, PlayerForceUpdateFlags::Duration))
             m_currentTrack->duration = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.EndTime() - timelineProps.StartTime());
+
+        trackCopy = *m_currentTrack;
     }
 
     if (m_playerHandler) {
-        m_playerHandler(*m_currentTrack);
+        m_playerHandler(trackCopy);
     }
+
 }
 
 Player::~Player() {

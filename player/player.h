@@ -18,10 +18,14 @@ class Player {
 		void OnPlaybackInfoChanged(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession sender, winrt::Windows::Foundation::IInspectable const&);
 		void OnMediaPropertiesChanged(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession sender, winrt::Windows::Foundation::IInspectable const&);
 
+		bool CheckForAppleMusicSession();
+		void HandleSessionsChanged();
+
 	public:
 		std::mutex m_cvMutex;
 		std::condition_variable m_cv;
-		bool m_sessionAttached = false;
+		std::atomic<bool> m_sessionAttached{ false };
+
 
 	public:
 		Player() = default;
