@@ -64,6 +64,7 @@ ApplePlayerInfo* ApplePlayerListener::ProcessSession(void) const {
             auto duration = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.EndTime() - timelineProps.StartTime());
 
             trackInfo = new ApplePlayerInfo(mediaProps, playbackInfo, position, duration);
+            trackInfo->CorrectDetails();
             trackInfo->UpdateUrls();
         }
         catch (const winrt::hresult_error& ex) {
@@ -177,10 +178,9 @@ bool ApplePlayerInfo::UpdateUrls() {
     std::string searchTerm = artistUtf8 + " " + albumUtf8;
     std::string encodedTerm = UrlEncode(searchTerm);
 
-    const std::string& jsonUrl = "https://itunes.apple.com/search?term=" + encodedTerm + "&entity=album&limit=1";
+    const std::string& jsonUrl = "https://itunes.apple.com/search?term=" + encodedTerm + "&entity=album&limit=1&country=us";
 
     auto jsonResponse = HttpGet(std::wstring(jsonUrl.begin(), jsonUrl.end()));
-
     try {
         auto json = nlohmann::json::parse(jsonResponse);
 
