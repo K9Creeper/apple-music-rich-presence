@@ -21,13 +21,16 @@
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="player\player-types.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="player\player.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="discord-ipc\discord-ipc.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="apple-player-listener\apple-player-listener.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="macros.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="apple-player-listener\apple-player-info.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -38,10 +41,10 @@
     <ClCompile Include="pch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="player\player.cpp">
+    <ClCompile Include="discord-ipc\discord-ipc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="discord-ipc\discord-ipc.cpp">
+    <ClCompile Include="apple-player-listener\apple-player-listener.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

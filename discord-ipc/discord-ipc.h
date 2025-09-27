@@ -7,16 +7,17 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+enum DiscordIpcOpcode {
+    DISCORD_IPC_OPCODE_HANDSHAKE = 0,
+    DISCORD_IPC_OPCODE_FRAME = 1
+};
+
+#define DISCORD_IPC_STRING "\\\\.\\pipe\\discord-ipc-"
+
 class DiscordIPC {
 public:
     explicit DiscordIPC(const std::string& clientId);
-    ~DiscordIPC();
-
-    bool Connect();
-    void Close();
-    bool SendActivity(const json& activity);
-
-	bool IsConnected() const;
+    ~DiscordIPC(void);
 
 private:
     std::atomic<bool> listening{ false };
@@ -25,6 +26,14 @@ private:
     std::string clientId_;
     std::mutex pipeMutex_;
 
-    bool SendHandshake();
+    bool SendHandshake(void);
     bool SendFrame(int opcode, const json& payload);
+
+public:
+
+    bool Connect(uint16_t ms_delay = 1000U);
+    void Close(void);
+    bool SendActivity(const json& activity);
+
+    bool IsConnected(void) const;
 };

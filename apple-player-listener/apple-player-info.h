@@ -1,10 +1,7 @@
 #pragma once
 
 #include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
-#include <winrt/Windows.Storage.Streams.h>
-#include <winrt/Windows.Storage.h>
 
 #include <functional>
 
@@ -44,7 +41,7 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Media::Control;
 
-struct PlayerInfo
+struct ApplePlayerInfo
 {
     std::wstring title;
     std::wstring artist;
@@ -58,9 +55,9 @@ struct PlayerInfo
     std::optional<std::string> thumbnailUrl;
     std::optional<std::string> albumUrl;
 
-    PlayerInfo() = default;
+    ApplePlayerInfo() = default;
 
-    PlayerInfo(const winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties& mediaProps,
+    ApplePlayerInfo(const winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties& mediaProps,
         const winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackInfo& playbackInfo,
         const std::chrono::seconds& pos,
         const std::chrono::seconds& dur)
@@ -71,7 +68,7 @@ struct PlayerInfo
         position(pos),
         playbackStatus(playbackInfo.PlaybackStatus())
     {
-        
+
     }
 
     bool isValid() const {
@@ -91,9 +88,9 @@ struct PlayerInfo
                 albumTitle = newAlbum;
             }
         }
-	}
+    }
 
-    void UpdateUrls();
+    bool UpdateUrls();
 };
 
-using PlayerInfoHandler = std::function<void(const PlayerInfo& info)>;
+using PlayerInfoHandler = std::function<void(const ApplePlayerInfo& info)>;
