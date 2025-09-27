@@ -20,8 +20,6 @@ public:
     ~DiscordIPC(void);
 
 private:
-    std::atomic<bool> listening{ false };
-
     HANDLE pipe_;
     std::string clientId_;
     std::mutex pipeMutex_;
@@ -31,7 +29,7 @@ private:
 
 public:
 
-    bool Connect(uint16_t ms_delay = 1000U);
+    bool Connect(uint16_t ms_delay = 1000U, uint16_t attempts = 1U);
     void Close(void);
     bool SendActivity(const json& activity);
 

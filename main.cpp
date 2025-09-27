@@ -50,10 +50,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     Shell_NotifyIcon(NIM_ADD, &nid);
 
-    discordIpc->Connect();
     applePlayer->Initialize();
+    
+    if (applePlayer->IsAppleMusicAttached()) {
+        discordIpc->Connect();
+    }
 
-    SetTimer(hwnd, 1, 5000, nullptr); // 5 seconds
+    SetTimer(hwnd, 1, 2500, nullptr);
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
@@ -140,8 +143,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
     case WM_PLAYER_UPDATE:
     {
-        if (!applePlayer->IsAppleMusicAttached())
+        if (!applePlayer->IsAppleMusicAttached()) {
+            discordIpc->Close();
             break;
+        }
 
         std::unique_ptr<ApplePlayerInfo> info{ applePlayer->ProcessSession() };
 
@@ -164,12 +169,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_TIMER:
-        if (!discordIpc->IsConnected()) {
-            discordIpc->Connect();
-        }
         if (!applePlayer->IsAppleMusicAttached()) {
             applePlayer->Initialize();
         }
+
+        if (!applePlayer->IsAppleMusicAttached() && discordIpc->IsConnected()) {
+            discordIpc->Close();
+        }
+
+        if (!discordIpc->IsConnected() && applePlayer->IsAppleMusicAttached()) {
+            discordIpc->Connect();
+        }
+
         break;
 
     default:

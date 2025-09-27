@@ -11,8 +11,8 @@ DiscordIPC::~DiscordIPC() {
     Close();
 }
 
-bool DiscordIPC::Connect(uint16_t ms_delay) {
-    for (int i = 0; i < 10; ++i) {
+bool DiscordIPC::Connect(uint16_t ms_delay, uint16_t attempts) {
+    for (uint16_t i = 0; i < attempts; ++i) {
         std::string pipeName = DISCORD_IPC_STRING + std::to_string(i);
         pipe_ = CreateFileA(pipeName.c_str(), GENERIC_WRITE | GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
         if (pipe_ != INVALID_HANDLE_VALUE) {
@@ -20,16 +20,14 @@ bool DiscordIPC::Connect(uint16_t ms_delay) {
                 Close();
                 return false;
             }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(ms_delay));
             return true;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms_delay));
     }
     return false;
 }
 
 void DiscordIPC::Close() {
-    listening.store(false);
     if (pipe_ != INVALID_HANDLE_VALUE) {
         CancelIoEx(pipe_, nullptr);
         CloseHandle(pipe_);

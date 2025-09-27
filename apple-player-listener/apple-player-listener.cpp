@@ -8,21 +8,22 @@
 
 extern HWND hwnd;
 
-bool ApplePlayerListener::CheckForAppleMusicSession(void)
+bool ApplePlayerListener::CheckForAppleMusicSession(bool attach)
 {
     if (m_smtcManager) {
         for (auto const& session : m_smtcManager.GetSessions()) {
             auto appId = session.SourceAppUserModelId();
             if (std::wstring(appId.c_str()).find(APPLE_MUSIC_AUMID) != std::wstring::npos) {
-                m_currentSession = session;
-                m_currentSession.PlaybackInfoChanged([this](auto&& sender, auto&& args) {
-                    OnChangeStub(sender, args);
-                    });
+                if (attach) {
+                    m_currentSession = session;
+                    m_currentSession.PlaybackInfoChanged([this](auto&& sender, auto&& args) {
+                        OnChangeStub(sender, args);
+                        });
 
-                m_currentSession.MediaPropertiesChanged([this](auto&& sender, auto&& args) {
-                    OnChangeStub(sender, args);
-                    });
-
+                    m_currentSession.MediaPropertiesChanged([this](auto&& sender, auto&& args) {
+                        OnChangeStub(sender, args);
+                        });
+                }
                 return true;
             }
         }
@@ -35,14 +36,16 @@ void ApplePlayerListener::OnChangeStub(winrt::Windows::Media::Control::GlobalSys
 }
 
 void ApplePlayerListener::Initialize(void) {
-    m_smtcManager = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+    if (m_smtcManager == nullptr) {
+        m_smtcManager = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
 
-    m_smtcManager.SessionsChanged([this](auto&&...) {
-        this->CheckForAppleMusicSession();
-    });
+        m_smtcManager.SessionsChanged([this](auto&&...) {
+            this->CheckForAppleMusicSession(true);
+            });
 
-    if(CheckForAppleMusicSession())
-        ApplePlayerListener::OnChangeStub(m_currentSession, nullptr);
+        if (CheckForAppleMusicSession(true))
+            ApplePlayerListener::OnChangeStub(m_currentSession, nullptr);
+    }
 }
 
 ApplePlayerListener::~ApplePlayerListener() {
