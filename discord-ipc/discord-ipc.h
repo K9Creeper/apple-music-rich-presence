@@ -1,37 +1,36 @@
 #pragma once
-
 #include <windows.h>
 #include <string>
 #include <mutex>
-
 #include <nlohmann/json.hpp>
+
 using json = nlohmann::json;
 
-enum DiscordIpcOpcode {
-    DISCORD_IPC_OPCODE_HANDSHAKE = 0,
-    DISCORD_IPC_OPCODE_FRAME = 1
-};
-
-#define DISCORD_IPC_STRING "\\\\.\\pipe\\discord-ipc-"
+constexpr int DISCORD_IPC_OPCODE_HANDSHAKE = 0;
+constexpr int DISCORD_IPC_OPCODE_FRAME = 1;
+constexpr int DISCORD_IPC_OPCODE_CLOSE = 2;
+constexpr int DISCORD_IPC_OPCODE_PING = 3;
+constexpr int DISCORD_IPC_OPCODE_PONG = 4;
+const std::string DISCORD_IPC_STRING = R"(\\.\pipe\discord-ipc-)";
 
 class DiscordIPC {
 public:
-    explicit DiscordIPC(const std::string& clientId);
-    ~DiscordIPC(void);
+    DiscordIPC(const std::string& clientId);
+    ~DiscordIPC();
+
+    bool Connect(uint16_t ms_delay = 100);
+    void Close();
+    bool SendActivity(const json& activity);
+    bool IsConnected() const;
 
 private:
-    HANDLE pipe_;
-    std::string clientId_;
-    std::mutex pipeMutex_;
-
-    bool SendHandshake(void);
+    bool SendHandshake();
     bool SendFrame(int opcode, const json& payload);
+    bool EnsureConnected();
+    std::string ReadResponse();
 
-public:
-
-    bool Connect(uint16_t ms_delay = 1000U, uint16_t attempts = 1U);
-    void Close(void);
-    bool SendActivity(const json& activity);
-
-    bool IsConnected(void) const;
+    std::string clientId_;
+    HANDLE pipe_;
+    std::mutex pipeMutex_;
+    std::chrono::steady_clock::time_point lastUpdate_;
 };

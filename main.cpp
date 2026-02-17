@@ -14,13 +14,13 @@
 constexpr uint64_t clientId = 1402044057647186053;
 
 static NOTIFYICONDATA nid = {};
-
 static auto applePlayer = std::make_shared<ApplePlayerListener>();
-static std::shared_ptr<DiscordIPC> discordIpc{ nullptr };
+static std::shared_ptr<DiscordIPC> discordIpc;
 
 HWND hwnd{};
-
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+
+static ApplePlayerInfo lastInfo;
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -47,14 +47,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wcscpy_s(nid.szTip, L"Apple Music Discord Rich Presence");
-
     Shell_NotifyIcon(NIM_ADD, &nid);
 
     applePlayer->Initialize();
-    
-    if (applePlayer->IsAppleMusicAttached()) {
-        discordIpc->Connect();
-    }
 
     SetTimer(hwnd, 1, 2500, nullptr);
 
@@ -66,62 +61,76 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     Shell_NotifyIcon(NIM_DELETE, &nid);
     winrt::uninit_apartment();
-
     return 0;
 }
 
-json BuildActivityPayload(const ApplePlayerInfo& info) {
-    static ApplePlayerInfo lastInfo;
-    const int type = 2;
-
+json BuildActivityPayload(const ApplePlayerInfo& info)
+{
+    const int type = 2; // Discord custom media type
     auto now = std::chrono::system_clock::now();
-    auto nowSeconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    int64_t nowSeconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
 
     int64_t posSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.position).count();
     int64_t durSeconds = std::chrono::duration_cast<std::chrono::seconds>(info.duration).count();
+    OutputDebugStringA(std::to_string(posSeconds).c_str());
+    OutputDebugStringA("\n");
+    OutputDebugStringA(std::to_string(durSeconds).c_str());
+    OutputDebugStringA("\n");
 
+    // --- Base Activity ---
     json activity = {
         {"type", type},
-        {"details", WideToUTF8(info.title)},
-        {"state", WideToUTF8(info.artist)},
-        {"assets", json::object()},
+        {"details", !info.title.empty() ? WideToUTF8(info.title) : "Unknown Track"},
+        {"state",   !info.artist.empty() ? WideToUTF8(info.artist) : "Unknown Artist"},
+        {"assets",  json::object()},
         {"buttons", json::array({
             {
                 {"label", "Play on Music"},
-                {"url", info.albumUrl.has_value() && !info.albumUrl->empty()
-                    ? info.albumUrl.value()
-                    : APPLLE_MUSIC_URL}
+                {"url", (info.albumUrl && !info.albumUrl->empty()) ? *info.albumUrl : APPLE_MUSIC_URL}
             }
         })}
     };
 
+    // Album name on hover
     if (!info.albumTitle.empty()) {
         activity["assets"]["large_text"] = WideToUTF8(info.albumTitle);
     }
 
+    // Album art (or fallback)
     activity["assets"]["large_image"] =
-        (info.thumbnailUrl.has_value() && !info.thumbnailUrl->empty())
-        ? info.thumbnailUrl.value()
-        : "apple_music_logo";
+        (info.thumbnailUrl && !info.thumbnailUrl->empty()) ? *info.thumbnailUrl : "apple_music_logo";
 
-    if (info.playbackStatus == winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused) {
+    // Playback state handling
+    using PlaybackStatus = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus;
+    
+    switch (info.playbackStatus) {
+    case PlaybackStatus::Paused:
         activity["state"] = "Paused | " + WideToUTF8(info.artist);
-        activity.erase("timestamps");
-    }
-    else if (info.playbackStatus == winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
+        if (activity.contains("timestamps"))
+            activity.erase("timestamps");
+        break;
+
+    case PlaybackStatus::Playing:
+    {
+        posSeconds = std::max<int64_t>(0, posSeconds);
+        durSeconds = std::max<int64_t>(1, durSeconds);
+
         int64_t startTime = nowSeconds - posSeconds;
         int64_t endTime = startTime + durSeconds;
 
         activity["timestamps"] = {
             {"start", startTime},
-            {"end", endTime}
+            {"end",   endTime}
         };
-    }
-    else {
-        activity.erase("timestamps");
+        break;
     }
 
-    lastInfo = info;
+    default: // Stopped or unknown
+        if (activity.contains("timestamps"))
+            activity.erase("timestamps");
+        break;
+    }
+
     return activity;
 }
 
@@ -143,20 +152,44 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
     case WM_PLAYER_UPDATE:
     {
-        if (!applePlayer->IsAppleMusicAttached()) {
-            discordIpc->Close();
-            break;
+        if (applePlayer->IsAppleMusicAttached() && discordIpc->IsConnected()) {
+            std::unique_ptr<ApplePlayerInfo> info{ applePlayer->ProcessSession() };
+            if (info && info->isValid()) {
+                if (info->title != lastInfo.title ||
+                    info->artist != lastInfo.artist ||
+                    info->playbackStatus != lastInfo.playbackStatus)
+                {
+
+                    OutputDebugStringA("Making payload\n");
+                    auto payload = BuildActivityPayload(*info);
+                    OutputDebugStringA("Finished payload\n");
+                    discordIpc->SendActivity(payload);
+                    lastInfo = *info;
+                }
+            }
         }
 
-        std::unique_ptr<ApplePlayerInfo> info{ applePlayer->ProcessSession() };
-
-        if (info && info->isValid()) {
-            auto payload = BuildActivityPayload(*info);
-            discordIpc->SendActivity(payload);
+        if (!applePlayer->IsAppleMusicAttached() && discordIpc->IsConnected()) {
+            discordIpc->Close();
         }
     }
     break;
 
+    case WM_TIMER: {
+        if (!applePlayer->IsAppleMusicAttached()) {
+            applePlayer->Initialize();
+        }
+
+        if (applePlayer->IsAppleMusicAttached() && !discordIpc->IsConnected()) {
+            discordIpc->Connect();
+        }
+
+        if (!applePlayer->IsAppleMusicAttached() && discordIpc->IsConnected()) {
+            discordIpc->Close();
+        }
+
+        break;
+    }
     case WM_COMMAND:
         if (LOWORD(wParam) == IDM_EXIT) {
             DestroyWindow(hwnd);
@@ -166,21 +199,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_DESTROY:
         Shell_NotifyIcon(NIM_DELETE, &nid);
         PostQuitMessage(0);
-        break;
-
-    case WM_TIMER:
-        if (!applePlayer->IsAppleMusicAttached()) {
-            applePlayer->Initialize();
-        }
-
-        if (!applePlayer->IsAppleMusicAttached() && discordIpc->IsConnected()) {
-            discordIpc->Close();
-        }
-
-        if (!discordIpc->IsConnected() && applePlayer->IsAppleMusicAttached()) {
-            discordIpc->Connect();
-        }
-
         break;
 
     default:

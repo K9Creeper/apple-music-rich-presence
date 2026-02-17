@@ -31,14 +31,45 @@ bool ApplePlayerListener::CheckForAppleMusicSession(bool attach)
     return false;
 }
 
-void ApplePlayerListener::OnChangeStub(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession sender, winrt::Windows::Foundation::IInspectable const&){
-    PostMessage(hwnd, WM_PLAYER_UPDATE, 0, 0);
+void ApplePlayerListener::OnChangeStub(ApplePlayerListener* list,
+    winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession sender,
+    winrt::Windows::Foundation::IInspectable const&)
+{
+    std::thread([list, sender]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        std::lock_guard<std::mutex> lock(list->m_updateMutex);
+
+        try {
+            auto mediaProps = sender.TryGetMediaPropertiesAsync().get();
+            auto timelineProps = sender.GetTimelineProperties();
+
+            auto position = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.Position());
+            auto duration = std::chrono::duration_cast<std::chrono::seconds>(timelineProps.EndTime() - timelineProps.StartTime());
+
+            winrt::hstring trackId = mediaProps.Title() + L"|" + mediaProps.AlbumArtist() + L"|" + mediaProps.AlbumTitle();
+
+            if (trackId != list->m_lastTrackId || position != list->m_lastPosition) {
+                list->m_lastTrackId = trackId;
+                list->m_lastPosition = position;
+
+                PostMessage(hwnd, WM_TIMER, 0, 0);
+                PostMessage(hwnd, WM_PLAYER_UPDATE, 0, 0);
+            }
+        }
+        catch (const winrt::hresult_error& ex) {
+            OutputDebugStringW((L"Error reading Apple Music properties: " + std::to_wstring(ex.code()) + L" - " + ex.message() + L"\n").c_str());
+        }
+
+        }).detach();
 }
 
 void ApplePlayerListener::Initialize(void) {
     if (m_smtcManager == nullptr) {
         m_smtcManager = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+    }
 
+    if (m_smtcManager) {
         m_smtcManager.SessionsChanged([this](auto&&...) {
             this->CheckForAppleMusicSession(true);
             });
@@ -46,6 +77,7 @@ void ApplePlayerListener::Initialize(void) {
         if (CheckForAppleMusicSession(true))
             ApplePlayerListener::OnChangeStub(m_currentSession, nullptr);
     }
+
 }
 
 ApplePlayerListener::~ApplePlayerListener() {
@@ -90,29 +122,52 @@ static std::string HttpGet(const std::wstring& url) {
     URL_COMPONENTS urlComp{};
     urlComp.dwStructSize = sizeof(urlComp);
 
-    wchar_t hostName[256];
-    wchar_t urlPath[1024];
+    wchar_t hostName[256]{};
+    wchar_t urlPath[1024]{};       // path only
+    wchar_t extraInfo[2048]{};     // "?query....."
+
     urlComp.lpszHostName = hostName;
     urlComp.dwHostNameLength = _countof(hostName);
+
     urlComp.lpszUrlPath = urlPath;
     urlComp.dwUrlPathLength = _countof(urlPath);
+
+    urlComp.lpszExtraInfo = extraInfo;
+    urlComp.dwExtraInfoLength = _countof(extraInfo);
 
     if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.length(), 0, &urlComp)) {
         OutputDebugStringA("Failed to crack URL\n");
         return result;
     }
 
-    HINTERNET hSession = WinHttpOpen(L"AppleMusicClient/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    std::wstring fullPath = std::wstring(urlPath, urlComp.dwUrlPathLength) +
+        std::wstring(extraInfo, urlComp.dwExtraInfoLength);
+
+    HINTERNET hSession = WinHttpOpen(L"AppleMusicClient/1.0",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0);
     if (!hSession) return result;
 
-    HINTERNET hConnect = WinHttpConnect(hSession, std::wstring(hostName, urlComp.dwHostNameLength).c_str(), urlComp.nPort, 0);
+    HINTERNET hConnect = WinHttpConnect(
+        hSession,
+        std::wstring(hostName, urlComp.dwHostNameLength).c_str(),
+        urlComp.nPort,
+        0);
+
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
         return result;
     }
 
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", std::wstring(urlPath, urlComp.dwUrlPathLength).c_str(), NULL,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+    HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect,
+        L"GET",
+        fullPath.c_str(),
+        nullptr,
+        WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES,
         (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0);
 
     if (!hRequest) {
@@ -121,28 +176,33 @@ static std::string HttpGet(const std::wstring& url) {
         return result;
     }
 
-    BOOL bResults = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-        WINHTTP_NO_REQUEST_DATA, 0,
-        0, 0);
+    BOOL bResults = WinHttpSendRequest(hRequest,
+        WINHTTP_NO_ADDITIONAL_HEADERS,
+        0,
+        WINHTTP_NO_REQUEST_DATA,
+        0,
+        0,
+        0);
 
     if (bResults)
-        bResults = WinHttpReceiveResponse(hRequest, NULL);
+        bResults = WinHttpReceiveResponse(hRequest, nullptr);
 
     if (bResults) {
         DWORD dwSize = 0;
         do {
-            DWORD dwDownloaded = 0;
-            WinHttpQueryDataAvailable(hRequest, &dwSize);
-
-            if (dwSize == 0)
+            if (!WinHttpQueryDataAvailable(hRequest, &dwSize) || dwSize == 0)
                 break;
 
             std::vector<char> buffer(dwSize + 1);
-            if (WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded)) {
-                buffer[dwDownloaded] = 0;
-                result.append(buffer.data());
-            }
-        } while (dwSize > 0);
+
+            DWORD dwDownloaded = 0;
+            if (!WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded))
+                break;
+
+            buffer[dwDownloaded] = 0;
+            result.append(buffer.data(), dwDownloaded);
+
+        } while (true);
     }
     else {
         OutputDebugStringA("WinHttp request failed\n");
@@ -158,53 +218,26 @@ static std::string HttpGet(const std::wstring& url) {
 static std::string UrlEncode(const std::string& value) {
     std::ostringstream escaped;
     escaped.fill('0');
-    escaped << std::hex;
+    escaped << std::hex << std::uppercase;
 
-    for (const auto& c : value) {
-        if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') {
+    for (unsigned char c : value) {
+        if (std::isalnum(c) || c == '.' || c == '-' || c == '_' || c == '*') {
             escaped << c;
         }
         else if (c == ' ') {
             escaped << '+';
         }
         else {
-            escaped << '%' << std::setw(2) << std::uppercase << int((unsigned char)c);
+            escaped << '%' << std::setw(2) << int(c);
         }
     }
+
     return escaped.str();
 }
 
-bool ApplePlayerInfo::UpdateUrls() {
-    std::string artistUtf8 = WideToUTF8(artist);
-    std::string albumUtf8 = WideToUTF8(albumTitle);
-
-    std::string searchTerm = artistUtf8 + " " + albumUtf8;
-    std::string encodedTerm = UrlEncode(searchTerm);
-
-    const std::string& jsonUrl = "https://itunes.apple.com/search?term=" + encodedTerm + "&entity=album&limit=1&country=us";
-
-    auto jsonResponse = HttpGet(std::wstring(jsonUrl.begin(), jsonUrl.end()));
-    try {
-        auto json = nlohmann::json::parse(jsonResponse);
-
-        if (json.contains("resultCount") && json["resultCount"].get<int>() > 0) {
-            auto& results = json["results"];
-            if (!results.empty()) {
-                if (results[0].contains("artworkUrl100")) {
-                    std::string artworkUrl = results[0]["artworkUrl100"].get<std::string>();
-                    thumbnailUrl = artworkUrl;
-                }
-                if (results[0].contains("collectionViewUrl")) {
-                    std::string collectionUrl = results[0]["collectionViewUrl"].get<std::string>();
-                    albumUrl = collectionUrl;
-                }
-            }
-        }
-    }
-    catch (const std::exception& e) {
-        OutputDebugStringA(("JSON parse error: " + std::string(e.what()) + "\n").c_str());
-        return false;
-    }
-
-    return true;
+bool ApplePlayerInfo::UpdateUrls()
+{
+    albumUrl = APPLE_MUSIC_URL;
+    thumbnailUrl = "apple_music_logo";
+    return false;
 }
